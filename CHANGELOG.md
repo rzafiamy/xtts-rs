@@ -23,7 +23,8 @@ First release: Coqui XTTS-v2 in Rust/Candle with GGUF weights.
   voice-cloning encoders (401 → 276 MB in q4k).
 - **Streaming**: `StreamDecoder` decodes windows of the one-pass frame grid
   (≥ 12 frames of context): first audio 35-45 ms on an RTX 4090.
-- **Text**: tn-rs normalization (French, English), XTTS cleaners for the 14
+- **Text**: tn-rs 0.3 normalization (French, English: numbers, amounts,
+  Roman numerals, signs, Markdown), XTTS cleaners for the 14
   languages, sentence splitting at the language's character limit.
 - **CLI**: `convert`, `speak`, `voices`, `serve`; `XTTS_*` environment
   variables for the model, device, host, port, voice and language.

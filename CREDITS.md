@@ -30,7 +30,7 @@ under its own license. Versions are those of `Cargo.lock`.
 |---|---|---|---|---|
 | `candle-core` | 0.11.0 | Tensors, quantized matmul (CPU/CUDA/Metal), GGUF read/write, pickle reader | MIT OR Apache-2.0 | https://github.com/huggingface/candle |
 | `candle-nn` | 0.11.0 | Layers, activations | MIT OR Apache-2.0 | https://github.com/huggingface/candle |
-| `tn` | 0.2.0 | Text normalization (fr/en) | MIT | https://github.com/rzafiamy/tn-rs |
+| `tn` | 0.3.0 | Text normalization (fr/en) | MIT | https://github.com/rzafiamy/tn-rs |
 | `tokenizers` | 0.21.4 | XTTS BPE (`vocab.json`) | Apache-2.0 | https://github.com/huggingface/tokenizers |
 | `cudarc` | 0.19.10 | Trimming the CUDA memory pool (optional, `cuda`) | MIT OR Apache-2.0 | https://github.com/coreylowman/cudarc |
 | `zip` | 8.6.0 | Reading `.pth` archives | MIT | https://github.com/zip-rs/zip2 |

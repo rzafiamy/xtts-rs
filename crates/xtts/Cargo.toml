@@ -27,4 +27,4 @@ regex = "1"
 # Same version as candle-core's, for trimming the CUDA memory pool.
 cudarc = { version = "0.19.8", optional = true, default-features = false, features = ["std", "driver", "cuda-version-from-build-system"] }
 zip = { version = "8", default-features = false }
-tn = { git = "https://github.com/rzafiamy/tn-rs", tag = "v0.2.0" }
+tn = { git = "https://github.com/rzafiamy/tn-rs", tag = "v0.3.0" }

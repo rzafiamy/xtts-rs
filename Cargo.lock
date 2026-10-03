@@ -2232,8 +2232,8 @@ dependencies = [
 
 [[package]]
 name = "tn"
-version = "0.2.0"
-source = "git+https://github.com/rzafiamy/tn-rs?tag=v0.2.0#6bdad9ff91477f35cefe1d6fff30138a71a4b3be"
+version = "0.3.0"
+source = "git+https://github.com/rzafiamy/tn-rs?tag=v0.3.0#4f2ea371f060c228c1a6b0f5232b4a81ab554c9a"
 dependencies = [
  "regex",
 ]
