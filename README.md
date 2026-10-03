@@ -84,7 +84,14 @@ x86_64 (CPU). Tested on Linux x86_64 with an RTX 4090.
 
 ### Model
 
-Download the Coqui checkpoint (`model.pth`, `config.json`, `vocab.json`,
+Converted model (q4k, `--no-cloning`, 276 MB):
+[rleo/XTTS-v2-GGUF](https://huggingface.co/rleo/XTTS-v2-GGUF).
+
+```bash
+hf download rleo/XTTS-v2-GGUF xtts-v2-q4k.gguf --local-dir models
+```
+
+Or download the Coqui checkpoint (`model.pth`, `config.json`, `vocab.json`,
 `speakers_xtts.pth` from [coqui/XTTS-v2](https://huggingface.co/coqui/XTTS-v2))
 and convert it:
 
