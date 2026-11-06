@@ -25,3 +25,13 @@ rand = "0.9"
 lto = "fat"
 codegen-units = 1
 panic = "abort"
+
+# CUDA kernels for GPUs older than compute 7.0 (GTX 10xx): candle 0.11.0 plus
+# small fixes, see https://github.com/SimoneAvogadro/candle/tree/older-nvidia-gpus
+# All the candle crates come from there, so each exists only once in the build.
+[patch.crates-io]
+candle-core = { git = "https://github.com/SimoneAvogadro/candle", rev = "f083eef12e60157f281238c21400476293a90c58" }
+candle-kernels = { git = "https://github.com/SimoneAvogadro/candle", rev = "f083eef12e60157f281238c21400476293a90c58" }
+candle-metal-kernels = { git = "https://github.com/SimoneAvogadro/candle", rev = "f083eef12e60157f281238c21400476293a90c58" }
+candle-nn = { git = "https://github.com/SimoneAvogadro/candle", rev = "f083eef12e60157f281238c21400476293a90c58" }
+candle-ug = { git = "https://github.com/SimoneAvogadro/candle", rev = "f083eef12e60157f281238c21400476293a90c58" }
