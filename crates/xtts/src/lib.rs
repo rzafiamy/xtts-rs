@@ -1,5 +1,7 @@
 //! Coqui XTTS-v2 in Rust/Candle with GGUF weights.
 
+pub mod audio;
+pub mod clone;
 pub mod config;
 pub mod gguf;
 pub mod gpt;
@@ -8,10 +10,13 @@ pub mod model;
 pub mod sampling;
 pub mod text;
 mod text_tables;
+pub mod voicefile;
 pub mod weights;
 
+pub use clone::{CloneEncoder, CloneOptions, CloneTimes};
 pub use model::{Codes, StreamOptions, SynthOptions, Voice, Xtts};
 pub use sampling::SamplingOptions;
+pub use voicefile::VoiceDir;
 
 /// Returns memory the CUDA allocator keeps cached after a request to the
 /// driver (Candle allocates from the device's default stream-ordered pool,

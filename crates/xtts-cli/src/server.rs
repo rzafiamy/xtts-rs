@@ -22,7 +22,9 @@ pub struct Settings {
     pub model: Xtts,
     pub host: String,
     pub port: u16,
-    pub voice: String,
+    /// Default voice; `None` when there are no voices yet (`--voices-dir`
+    /// still empty), so requests must wait for one to appear and name it.
+    pub voice: Option<String>,
     pub lang: String,
     pub model_id: String,
     pub sampling: SamplingOptions,
@@ -33,13 +35,15 @@ pub struct Settings {
 
 struct AppState {
     model: Mutex<Xtts>,
-    voice: String,
+    voice: Option<String>,
     lang: String,
     model_id: String,
     sampling: SamplingOptions,
     normalize: bool,
     decode_chunk: usize,
-    voices: Vec<String>,
+    /// Built-in voices (the folder is asked directly, it can change).
+    builtin: Vec<String>,
+    voice_dir: Option<Arc<xtts::VoiceDir>>,
 }
 
 #[derive(Deserialize)]
@@ -84,9 +88,14 @@ impl AppState {
     /// Checks the voice before a stream starts (errors cannot be reported
     /// once audio is flowing).
     fn check_voice(&self, req: &SpeechRequest) -> Result<(), Box<Response>> {
-        let name = req.voice.as_deref().unwrap_or(&self.voice);
-        let norm = |s: &str| s.to_lowercase().replace(['_', '-'], " ");
-        if self.voices.iter().any(|v| norm(v) == norm(name)) {
+        let name = req.voice.as_deref().or(self.voice.as_deref()).unwrap_or("");
+        let norm = xtts::voicefile::normalize_name;
+        if self.builtin.iter().any(|v| norm(v) == norm(name))
+            || self
+                .voice_dir
+                .as_ref()
+                .is_some_and(|d| d.path_of(name).is_some())
+        {
             Ok(())
         } else {
             Err(Box::new(error(
@@ -141,7 +150,8 @@ fn stream_response(st: Arc<AppState>, req: SpeechRequest, wav: bool) -> Response
             return;
         }
         let res = (|| -> anyhow::Result<()> {
-            let voice = model.voice(req.voice.as_deref().unwrap_or(&st.voice))?;
+            let name = req.voice.as_deref().or(st.voice.as_deref()).unwrap_or("");
+            let voice = model.voice(name)?;
             let lang = req.language.as_deref().unwrap_or(&st.lang);
             let opts = st.options(&req);
             let t0 = std::time::Instant::now();
@@ -219,7 +229,7 @@ async fn speech(State(st): State<Arc<AppState>>, Json(req): Json<SpeechRequest>)
     let res =
         tokio::task::spawn_blocking(move || -> Result<(Vec<f32>, u32), (StatusCode, String)> {
             let model = st2.model.blocking_lock();
-            let name = req.voice.as_deref().unwrap_or(&st2.voice);
+            let name = req.voice.as_deref().or(st2.voice.as_deref()).unwrap_or("");
             let voice = model
                 .voice(name)
                 .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -257,8 +267,11 @@ async fn speech(State(st): State<Arc<AppState>>, Json(req): Json<SpeechRequest>)
 }
 
 async fn voices(State(st): State<Arc<AppState>>) -> Response {
-    let model = st.model.lock().await;
-    Json(json!({ "voices": model.voices(), "default": st.voice })).into_response()
+    if let Some(d) = &st.voice_dir {
+        d.refresh();
+    }
+    let names = xtts::model::all_voice_names(&st.builtin, st.voice_dir.as_deref());
+    Json(json!({ "voices": names, "default": st.voice })).into_response()
 }
 
 async fn models(State(st): State<Arc<AppState>>) -> Response {
@@ -272,8 +285,11 @@ async fn health() -> Response {
 
 pub fn serve(s: Settings) -> Result<()> {
     // Warmup: CUDA kernels and allocator before the first request.
-    let voice = s.model.voice(&s.voice)?;
-    if s.warmup {
+    if s.warmup && s.voice.is_none() {
+        tracing::warn!("no voices yet: skipping the warmup");
+    }
+    if let (true, Some(name)) = (s.warmup, &s.voice) {
+        let voice = s.model.voice(name)?;
         let warm = SynthOptions {
             sampling: SamplingOptions {
                 seed: Some(0),
@@ -289,7 +305,8 @@ pub fn serve(s: Settings) -> Result<()> {
 
     let addr = format!("{}:{}", s.host, s.port);
     let state = Arc::new(AppState {
-        voices: s.model.voices().to_vec(),
+        builtin: s.model.builtin_voices().to_vec(),
+        voice_dir: s.model.voice_dir(),
         model: Mutex::new(s.model),
         voice: s.voice,
         lang: s.lang,

@@ -30,6 +30,9 @@ two linear interpolations (x4, then 22.05 → 24 kHz) → HiFi-GAN conditioned o
   splitting, tokenizer.
 - `crates/xtts/src/model.rs`: `Xtts` (load, voices, `generate_codes`,
   `synthesize`, `synthesize_stream`).
+- `crates/xtts/src/clone.rs` + `audio.rs`: voice cloning, the same numbers as
+  Coqui's `get_conditioning_latents`; `voicefile.rs`: `.voice` files and the
+  `--voices-dir` folder. Measures in `docs/cloning.md`.
 - `crates/xtts-cli/src/`: CLI (`main.rs`) and HTTP server (`server.rs`).
 - `scripts/ref.py` + `crates/xtts/examples/parity.rs`: greedy parity against
   coqui-tts; `examples/bench.rs`: latency; `scripts/vram.sh`: server VRAM;
@@ -44,6 +47,9 @@ xtts convert <coqui-dir> -o models/xtts-v2-q4k.gguf --gpt-dtype q4k [--no-clonin
 ./build.sh --cuda      # release binary in build/ (zallama's build-xtts.sh calls it)
 xtts speak -m models/xtts-v2-q4k.gguf -l fr "Bonjour." -o out.wav
 cargo run --release --example parity -- <coqui-dir> <ref.safetensors> fr "<text>" --cpu
+xtts convert <coqui-dir> -o models/clone.gguf --only-cloning --speaker-dtype f16
+xtts clone -m models/clone.gguf --out voice.voice a.wav b.wav
+scripts/clone_ref.py + examples/clone_parity.rs   # cloning, stage by stage against coqui-tts
 ```
 
 CUDA: `--features cuda`, build into `--target-dir target-cuda`, needs
@@ -75,7 +81,12 @@ CUDA: `--features cuda`, build into `--target-dir target-cuda`, needs
   babbles even in greedy Coqui; zallama offers fr/en only.
 - `--no-cloning` drops the conditioning encoder, perceiver and speaker
   encoder (125 MB of a 401 MB q4k file). They are F16/F32 and stay on the
-  CPU, so VRAM is unchanged; voice cloning is not implemented yet anyway.
+  CPU, so VRAM is unchanged.
+- Cloning: `resample` must stay torchaudio's. Another resampler (soxr) moves
+  the speaker embedding by 1-cos ~ 1e-2, far more than F16 weights do (~5e-7).
+  ConditioningEncoder has `gpt_n_heads` (16) heads, not its default 4.
+  PyTorch on CUDA differs from PyTorch on the CPU by about 1e-3 of the peak in
+  the latents, so compare with a CPU reference to see the port's own error.
 - VRAM (RTX 4090, q4k): 776 MiB idle / 1032 MiB peak, of which 428 MiB is
   the bare Candle CUDA context (`examples/vram_floor.rs`). WER (Parakeet,
   `scripts/wer.py`): q4k 1.2 % fr / 0.5 % en; q6k and q8_0 are no better.

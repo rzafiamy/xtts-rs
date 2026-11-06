@@ -31,7 +31,7 @@ Main path: `xtts convert <dir> --gpt-dtype q4k --no-cloning` →
   GGUF, quantized GPT without intelligibility loss, CUDA, streaming, HTTP API.
 - **Should**: CPU and Metal builds, the other 12 XTTS languages (cleaners
   ported, not validated by ear or ASR), speed control.
-- **Could / later**: voice cloning from reference audio, zh/ja/ko (need
+- **Could / later**: zh/ja/ko (need
   their own tokenizer front ends).
 
 ## Functional requirements
@@ -55,6 +55,8 @@ Main path: `xtts convert <dir> --gpt-dtype q4k --no-cloning` →
 | REQ-CLI-001 | `xtts speak` writes a 24 kHz WAV; `xtts voices` lists the voices. | Must |
 | REQ-SRV-001 | `POST /v1/audio/speech` (OpenAI shape + `language`; WAV/PCM; `stream`), `GET /v1/voices`, `/v1/models`, `/health` after warmup; bad input → 400 with a JSON error. | Must |
 | REQ-SRV-002 | `POST /stream` (`{text, voice, language}`) returns raw 24 kHz PCM16 as it is decoded; generation stops when the client disconnects. | Must |
+| REQ-CLN-001 | `xtts clone` computes a voice from WAV files with the numbers of coqui-tts `get_conditioning_latents`, without PyTorch: 1-cos of the latents ≤ 1e-6 against PyTorch on the CPU with F16 weights. | Should |
+| REQ-CLN-002 | `--voices-dir` serves the `.voice` files of a folder besides the built-in voices, reading only their headers at startup; a voice from a file gives the same audio as the same voice in the GGUF. | Should |
 
 ## Non-functional requirements
 
@@ -66,8 +68,8 @@ Main path: `xtts convert <dir> --gpt-dtype q4k --no-cloning` →
 
 ## Known limitations
 
-- Voice cloning from reference audio is not implemented (the encoders are
-  kept in the GGUF unless `--no-cloning`).
+- Voice cloning reads WAV files only (`xtts clone`; the encoders are kept in
+  the GGUF unless `--no-cloning`).
 - Only French and English are validated; German babbles after sentences in
   the original model too. zh-cn, ja and ko are not supported.
 - CPU synthesis is ~0.4x real time: usable offline, too slow to stream.

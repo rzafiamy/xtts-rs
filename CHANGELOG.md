@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cloning**: `xtts clone` computes a voice from WAV files with the same
+  numbers as coqui-tts (torchaudio resampling, mel, conditioning encoder,
+  perceiver, speaker encoder), without PyTorch.
+- **`.voice` files**: `--voices-dir` serves a folder of them besides the
+  built-in voices; only the headers are read at startup.
+- **`xtts convert`**: `--only-cloning`, `--no-voices`, `--cloning-dtype`,
+  `--speaker-dtype`.
+
 ## [0.1.0] - 2026-10-03
 
 First release: Coqui XTTS-v2 in Rust/Candle with GGUF weights.

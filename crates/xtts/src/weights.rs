@@ -84,6 +84,16 @@ pub struct Linear {
     bias: Option<Tensor>,
 }
 
+impl Linear {
+    /// A linear layer from a dense `[out, in]` weight.
+    pub fn from_dense(weight: Tensor, bias: Option<Tensor>) -> Self {
+        Self {
+            inner: LinearInner::Dense(weight),
+            bias,
+        }
+    }
+}
+
 impl Module for Linear {
     fn forward(&self, xs: &Tensor) -> candle_core::Result<Tensor> {
         let ys = match &self.inner {

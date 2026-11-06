@@ -33,6 +33,9 @@ pub struct ModelArgs {
     /// only adds conversions — 170 vs 307 codes/s on an RTX 4090).
     #[arg(long)]
     dtype: Option<String>,
+    /// Folder of `.voice` files to serve besides the built-in voices.
+    #[arg(long, env = "XTTS_VOICES_DIR")]
+    voices_dir: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Clone)]
@@ -80,6 +83,14 @@ impl GenArgs {
     }
 }
 
+/// One voice of `xtts clone --manifest`.
+#[derive(serde::Deserialize)]
+struct CloneJob {
+    name: String,
+    out: PathBuf,
+    files: Vec<PathBuf>,
+}
+
 #[derive(Subcommand)]
 enum Cmd {
     /// Convert a Coqui checkpoint directory (model.pth, config.json,
@@ -97,6 +108,51 @@ enum Cmd {
         /// Leave out the voice-cloning encoders (125 MB): built-in voices only.
         #[arg(long)]
         no_cloning: bool,
+        /// Write only the voice-cloning encoders, for `xtts clone`.
+        #[arg(long)]
+        only_cloning: bool,
+        /// Leave out the built-in voices (they live in `.voice` files).
+        #[arg(long)]
+        no_voices: bool,
+        /// Dtype of the conditioning encoder and perceiver.
+        #[arg(long, default_value = "f16")]
+        cloning_dtype: String,
+        /// Dtype of the speaker encoder (f32, f16, bf16).
+        #[arg(long, default_value = "f32")]
+        speaker_dtype: String,
+    },
+    /// Compute a voice from reference audio and write it as a `.voice` file.
+    Clone {
+        /// Model with the cloning encoders: GGUF or Coqui checkpoint directory.
+        #[arg(short, long, env = "XTTS_CLONE_MODEL")]
+        model: PathBuf,
+        /// Device: cpu, cuda, cuda:N, metal (default: cuda if available).
+        #[arg(long, default_value = "auto", env = "XTTS_DEVICE")]
+        device: String,
+        /// CPU threads (default: all cores).
+        #[arg(long, env = "XTTS_THREADS")]
+        threads: Option<usize>,
+        /// Output file (single voice).
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Voice name (default: the output file's stem).
+        #[arg(short, long)]
+        name: Option<String>,
+        /// Many voices with one model load: a JSON array of
+        /// `{"name": ..., "out": ..., "files": [...]}`.
+        #[arg(long, conflicts_with_all = ["out", "name", "wavs"])]
+        manifest: Option<PathBuf>,
+        /// Seconds kept of each clip.
+        #[arg(long, default_value_t = 30)]
+        max_ref_length: usize,
+        /// Seconds of the concatenated clips the GPT latents see.
+        #[arg(long, default_value_t = 30)]
+        gpt_cond_len: usize,
+        /// Seconds per chunk of the GPT latents.
+        #[arg(long, default_value_t = 4)]
+        gpt_cond_chunk_len: usize,
+        /// Reference clips (WAV), used in this order.
+        wavs: Vec<PathBuf>,
     },
     /// Synthesize speech to a WAV file.
     Speak {
@@ -147,12 +203,12 @@ enum Cmd {
     },
 }
 
-pub fn load_model(args: &ModelArgs) -> Result<Xtts> {
-    if let Some(n) = args.threads {
+fn set_device(device: &str, threads: Option<usize>) -> Result<Device> {
+    if let Some(n) = threads {
         // Candle's CPU kernels use rayon's global pool.
         unsafe { std::env::set_var("RAYON_NUM_THREADS", n.to_string()) };
     }
-    let device = match args.device.as_str() {
+    Ok(match device {
         "auto" => Device::cuda_if_available(0)?,
         "cpu" => Device::Cpu,
         "cuda" => Device::new_cuda(0)?,
@@ -161,7 +217,11 @@ pub fn load_model(args: &ModelArgs) -> Result<Xtts> {
             Some(n) => Device::new_cuda(n.parse().context("cuda:N")?)?,
             None => anyhow::bail!("unknown device '{d}'"),
         },
-    };
+    })
+}
+
+pub fn load_model(args: &ModelArgs) -> Result<Xtts> {
+    let device = set_device(&args.device, args.threads)?;
     let dtype = match args.dtype.as_deref() {
         Some("f32") => DType::F32,
         Some("f16") => DType::F16,
@@ -170,7 +230,17 @@ pub fn load_model(args: &ModelArgs) -> Result<Xtts> {
         None => DType::F32,
     };
     let t0 = std::time::Instant::now();
-    let model = Xtts::load(&args.model, &device, dtype)?;
+    let mut model = Xtts::load(&args.model, &device, dtype)?;
+    if let Some(dir) = &args.voices_dir {
+        let t0 = std::time::Instant::now();
+        let d = xtts::VoiceDir::open(dir)?;
+        tracing::info!(
+            "{} voices in {dir:?}, scanned in {:.0} ms",
+            d.names().len(),
+            t0.elapsed().as_secs_f64() * 1e3
+        );
+        model.attach_voice_dir(std::sync::Arc::new(d));
+    }
     tracing::info!(
         "loaded {:?} on {:?} ({dtype:?}) in {:.1} s",
         args.model,
@@ -220,11 +290,19 @@ fn main() -> Result<()> {
             gpt_dtype,
             decoder_dtype,
             no_cloning,
+            only_cloning,
+            no_voices,
+            cloning_dtype,
+            speaker_dtype,
         } => {
             let opts = xtts::gguf::ConvertOptions {
                 gpt_dtype: xtts::gguf::parse_dtype(&gpt_dtype)?,
                 decoder_dtype: xtts::gguf::parse_dtype(&decoder_dtype)?,
                 no_cloning,
+                only_cloning,
+                no_voices,
+                cloning_dtype: xtts::gguf::parse_dtype(&cloning_dtype)?,
+                speaker_dtype: xtts::gguf::parse_dtype(&speaker_dtype)?,
             };
             let counts = xtts::gguf::convert(&dir, &out, &opts)?;
             for (dt, n) in counts {
@@ -232,6 +310,73 @@ fn main() -> Result<()> {
             }
             let size = std::fs::metadata(&out)?.len();
             println!("wrote {} ({:.0} MB)", out.display(), size as f64 / 1e6);
+        }
+        Cmd::Clone {
+            model,
+            device,
+            threads,
+            out,
+            name,
+            manifest,
+            max_ref_length,
+            gpt_cond_len,
+            gpt_cond_chunk_len,
+            wavs,
+        } => {
+            let device = set_device(&device, threads)?;
+            let t0 = std::time::Instant::now();
+            let enc = xtts::CloneEncoder::load(&model, &device)?;
+            tracing::info!(
+                "cloning encoders loaded on {device:?} in {:.2} s",
+                t0.elapsed().as_secs_f64()
+            );
+            let opts = xtts::CloneOptions {
+                max_ref_length,
+                gpt_cond_len,
+                gpt_cond_chunk_len,
+            };
+            let jobs: Vec<CloneJob> = match manifest {
+                Some(m) => {
+                    let s =
+                        std::fs::read_to_string(&m).with_context(|| format!("reading {m:?}"))?;
+                    serde_json::from_str(&s).with_context(|| format!("parsing {m:?}"))?
+                }
+                None => {
+                    let out = out.context("--out or --manifest is required")?;
+                    let name = match name {
+                        Some(n) => n,
+                        None => out
+                            .file_stem()
+                            .context("--out has no file name")?
+                            .to_string_lossy()
+                            .into_owned(),
+                    };
+                    vec![CloneJob {
+                        name,
+                        out,
+                        files: wavs,
+                    }]
+                }
+            };
+            for job in &jobs {
+                let t0 = std::time::Instant::now();
+                let (voice, times) = enc.clone_files(&job.files, &opts)?;
+                let secs = t0.elapsed().as_secs_f64();
+                xtts::voicefile::write_voice(&job.out, &job.name, &voice)?;
+                // One JSON line per voice on stdout.
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "name": job.name,
+                        "out": job.out,
+                        "clips": job.files.len(),
+                        "seconds": secs,
+                        "audio_s": times.audio,
+                        "speaker_s": times.speaker,
+                        "cond_s": times.cond,
+                    })
+                );
+            }
         }
         Cmd::Speak {
             model,
@@ -280,7 +425,17 @@ fn main() -> Result<()> {
             no_warmup,
         } => {
             let m = load_model(&model)?;
-            m.voice(&voice)?;
+            // A model without voices relies on the folder, which may even be
+            // empty on a first run: the default voice is then whatever is there.
+            let voice = match m.voice(&voice) {
+                Ok(_) => Some(voice),
+                Err(e) if model.voices_dir.is_none() => return Err(e),
+                Err(_) => {
+                    let first = m.voices().into_iter().next();
+                    tracing::warn!("voice '{voice}' not found, default voice: {first:?}");
+                    first
+                }
+            };
             let sampling = gen_args.sampling(&m);
             server::serve(server::Settings {
                 model: m,

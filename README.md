@@ -45,6 +45,13 @@ Core (must work for a release):
 
 Secondary:
 
+- **Voice cloning** from a few WAV clips, without PyTorch (`xtts clone`):
+  the same conditioning latents and speaker embedding as coqui-tts
+  `get_conditioning_latents` (1-cos ≤ 1e-6 with F16 weights), about 1 s per
+  voice on the CPU and 0.2 s on a GPU (`clone.rs`, `audio.rs`).
+- **`.voice` files**: a cloned voice is a ~133 KB file; `--voices-dir` serves
+  a folder of them besides the built-in voices and picks up new files while
+  the server runs (`voicefile.rs`). See [docs/cloning.md](docs/cloning.md).
 - 12 more XTTS languages (es, de, it, pt, pl, tr, ru, nl, cs, ar, hu, hi):
   cleaners ported, not validated (`text.rs`, `text_tables.rs`).
 - `speed`, sampling controls, seeds (`model.rs`, `sampling.rs`); CPU and
@@ -54,7 +61,7 @@ Each feature maps to code and tests in [spec/matrix.md](spec/matrix.md).
 
 ### Known limitations
 
-- No voice cloning from reference audio yet.
+- Voice cloning reads WAV files only.
 - German babbles after sentences (the original model too); zh-cn, ja, ko
   are not supported.
 - CPU synthesis is ~0.4x real time: fine offline, too slow to stream.
@@ -100,8 +107,9 @@ xtts convert ./XTTS-v2 -o models/xtts-v2-q4k.gguf --gpt-dtype q4k --no-cloning
 xtts voices -m models/xtts-v2-q4k.gguf      # checks the file: lists 58 voices
 ```
 
-`--no-cloning` leaves out the voice-cloning encoders (125 MB, unused for
-now). The file is under the Coqui Public Model License, like the weights.
+`--no-cloning` leaves out the voice-cloning encoders (125 MB), which only
+`xtts clone` needs (see [Voice cloning](#voice-cloning)). The file is under
+the Coqui Public Model License, like the weights.
 
 ## Usage
 
@@ -113,6 +121,31 @@ curl -s localhost:8091/v1/audio/speech -H 'content-type: application/json' \
 ```
 
 API: [docs/serve.md](docs/serve.md).
+
+### Voice cloning
+
+The published GGUF has no cloning encoders, so convert them once from the
+Coqui checkpoint into a small file of their own (109 MB), then clone from a
+few WAV clips of one speaker (10-30 s in total is plenty):
+
+```bash
+xtts convert ./XTTS-v2 -o models/xtts-v2-clone.gguf --only-cloning --speaker-dtype f16
+mkdir -p voices
+xtts clone -m models/xtts-v2-clone.gguf -o voices/alice.voice clip1.wav clip2.wav
+xtts speak -m models/xtts-v2-q4k.gguf --voices-dir voices -v alice "Hello there." -o out.wav
+xtts serve -m models/xtts-v2-q4k.gguf --voices-dir voices
+```
+
+- The voice name is the file name (`alice`) unless `--name` sets it.
+- `--manifest voices.json` clones many voices with one model load: a JSON
+  array of `{"name", "out", "files"}`.
+- `--voices-dir` also works with `voices`; a `.voice` file wins over a
+  built-in voice of the same name. The server rescans the folder for unknown
+  names and on `GET /v1/voices`, so new voices need no restart.
+- A model converted with `--no-voices` drops the 58 built-in voices, for
+  setups that only use `.voice` files.
+
+Accuracy against coqui-tts, timings and file sizes: [docs/cloning.md](docs/cloning.md).
 
 ## Configuration
 
@@ -135,6 +168,8 @@ options.
 | `-m, --model`, `XTTS_MODEL` | GGUF file or Coqui checkpoint directory | — |
 | `--device`, `XTTS_DEVICE` | `auto` (CUDA if available), `cpu`, `cuda`, `cuda:N`, `metal` | `auto` |
 | `--threads`, `XTTS_THREADS` | CPU threads | all cores |
+| `--voices-dir`, `XTTS_VOICES_DIR` | Folder of `.voice` files served besides the built-in voices (subfolders too) | — |
+| `-m, --model`, `XTTS_CLONE_MODEL` (clone) | Model with the cloning encoders | — |
 | `--voice`, `XTTS_VOICE` (serve) | Default voice | `Claribel Dervla` |
 | `--lang`, `XTTS_LANG` (serve) | Default language | `en` |
 | `--host`, `--port`, `XTTS_HOST/PORT` | Server address | `127.0.0.1:8091` |
@@ -164,6 +199,7 @@ Manual tests (parity with coqui-tts, WER, VRAM): [spec/manual-tests.md](spec/man
 - [docs/architecture.md](docs/architecture.md) — pipeline and modules
 - [docs/performance.md](docs/performance.md) — speed, VRAM, WER
 - [docs/serve.md](docs/serve.md) — HTTP API
+- [docs/cloning.md](docs/cloning.md) — voice cloning, `.voice` files, accuracy
 - [spec/](spec/) — specification, traceability matrix, manual tests
 - [portfolio/](portfolio/) — overview, demos, diagram
 - [CHANGELOG.md](CHANGELOG.md), [CREDITS.md](CREDITS.md), [CONTRIBUTING.md](CONTRIBUTING.md)

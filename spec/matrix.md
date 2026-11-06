@@ -24,5 +24,7 @@ described in [manual-tests.md](manual-tests.md). Model tests
 | REQ-CLI-001 | CLI speak / voices | CLI | `crates/xtts-cli/src/main.rs` | `tests/e2e.sh` | ✅ | |
 | REQ-SRV-001 | HTTP API | Server | `crates/xtts-cli/src/server.rs` | `tests/e2e.sh` | ✅ | unknown voice → 400 |
 | REQ-SRV-002 | `/stream` | Server | `server.rs` (`stream_response`) | `tests/e2e.sh`, manual MT-03 | ✅ | used by zallama `/v1/realtime` |
+| REQ-CLN-001 | Cloning | Cloning | `crates/xtts/src/clone.rs`, `audio.rs` | `examples/clone_parity.rs` | ✅ | see `docs/cloning.md` |
+| REQ-CLN-002 | `.voice` files | Cloning | `crates/xtts/src/voicefile.rs`, `server.rs` | `voicefile.rs` unit tests | ✅ | |
 
 Updated: 2026-10-03 (v0.1.0).

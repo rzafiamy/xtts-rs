@@ -47,3 +47,6 @@ CLAUDE.md
 *.log
 tmp/
 .cache/
+
+# Cloned voices
+*.voice

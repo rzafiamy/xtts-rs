@@ -15,8 +15,13 @@
 //!   `voices.spk` `[n, 512]` (speaker embeddings) for the built-in voices.
 //!
 //! The GPT-2 linear layers and the mel head use `gpt_dtype`; the HiFi-GAN
-//! decoder uses `decoder_dtype`; everything else is F16 (embeddings,
-//! conditioning encoder, perceiver) or F32 (norms, biases, speaker encoder).
+//! decoder uses `decoder_dtype`; the conditioning encoder and perceiver use
+//! `cloning_dtype` (F16 by default), the speaker encoder `speaker_dtype` (F32);
+//! everything else is F16 (embeddings) or F32 (norms, biases).
+//!
+//! `--only-cloning` writes just the three cloning encoders and `mel_stats`,
+//! for `xtts clone`; `--no-voices` leaves the built-in voices out, for a model
+//! whose voices live in `.voice` files.
 
 use crate::weights::Weights;
 use anyhow::{Context, Result, bail};
@@ -68,6 +73,14 @@ pub struct ConvertOptions {
     /// Leave out the voice-cloning encoders (conditioning encoder,
     /// perceiver, speaker encoder: 125 MB) — built-in voices only.
     pub no_cloning: bool,
+    /// Write only the cloning encoders (and `mel_stats`).
+    pub only_cloning: bool,
+    /// Leave out the built-in voices.
+    pub no_voices: bool,
+    /// Dtype of the conditioning encoder and perceiver matrices.
+    pub cloning_dtype: GgmlDType,
+    /// Dtype of the speaker encoder's matrices.
+    pub speaker_dtype: GgmlDType,
 }
 
 impl Default for ConvertOptions {
@@ -76,6 +89,10 @@ impl Default for ConvertOptions {
             gpt_dtype: GgmlDType::Q8_0,
             decoder_dtype: GgmlDType::F16,
             no_cloning: false,
+            only_cloning: false,
+            no_voices: false,
+            cloning_dtype: GgmlDType::F16,
+            speaker_dtype: GgmlDType::F32,
         }
     }
 }
@@ -177,13 +194,16 @@ fn read_checkpoint(path: &Path) -> Result<HashMap<String, Tensor>> {
     Ok(out)
 }
 
-fn read_assets_and_tensors(dir: &Path) -> Result<(Assets, HashMap<String, Tensor>)> {
+fn read_assets_and_tensors(
+    dir: &Path,
+    with_voices: bool,
+) -> Result<(Assets, HashMap<String, Tensor>)> {
     let read = |f: &str| {
         std::fs::read_to_string(dir.join(f)).with_context(|| format!("reading {:?}", dir.join(f)))
     };
     let mut tensors = read_checkpoint(&dir.join("model.pth"))?;
     let speakers = dir.join("speakers_xtts.pth");
-    let voices = if speakers.exists() {
+    let voices = if with_voices && speakers.exists() {
         let (names, cond, spk) = read_voices(&speakers)?;
         tensors.insert("voices.cond".into(), cond);
         tensors.insert("voices.spk".into(), spk);
@@ -205,12 +225,24 @@ fn dtype_for(name: &str, t: &Tensor, opts: &ConvertOptions) -> Result<GgmlDType>
     let rank = t.rank();
     let last = *t.dims().last().unwrap_or(&1);
     Ok(
-        if name.starts_with("hifigan_decoder.speaker_encoder.")
-            || name.starts_with("voices.")
-            || rank == 1
-            || name == "mel_stats"
-        {
+        if name.starts_with("voices.") || rank == 1 || name == "mel_stats" {
             GgmlDType::F32
+        } else if name.starts_with("hifigan_decoder.speaker_encoder.") {
+            // The filterbank and the windows are not weights: exact bits.
+            if name.contains(".torch_spec.") || rank != 2 && rank != 4 && rank != 3 {
+                GgmlDType::F32
+            } else {
+                dense_or_f32(opts.speaker_dtype, rank, last)
+            }
+        } else if name.starts_with("gpt.conditioning_") {
+            if name.ends_with(".latents") {
+                match opts.cloning_dtype {
+                    GgmlDType::F32 => GgmlDType::F32,
+                    _ => GgmlDType::F16,
+                }
+            } else {
+                dense_or_f32(opts.cloning_dtype, rank, last)
+            }
         } else if name.starts_with("gpt.gpt.h.") || name.starts_with("gpt.mel_head.") {
             fit_dtype(opts.gpt_dtype, last)
         } else if name.starts_with("hifigan_decoder.waveform_decoder.") {
@@ -224,6 +256,16 @@ fn dtype_for(name: &str, t: &Tensor, opts: &ConvertOptions) -> Result<GgmlDType>
     )
 }
 
+/// `wanted` when the tensor can be stored in it: block quantization only fits
+/// the 2-D matrices of linear layers.
+fn dense_or_f32(wanted: GgmlDType, rank: usize, last: usize) -> GgmlDType {
+    match wanted {
+        GgmlDType::F32 | GgmlDType::F16 | GgmlDType::BF16 => wanted,
+        _ if rank == 2 => fit_dtype(wanted, last),
+        _ => GgmlDType::F16,
+    }
+}
+
 /// Tensors only voice cloning uses (computing a voice from reference audio).
 fn is_cloning(name: &str) -> bool {
     name.starts_with("gpt.conditioning_encoder.")
@@ -234,10 +276,14 @@ fn is_cloning(name: &str) -> bool {
 /// Converts a Coqui checkpoint directory to one GGUF file; returns per-dtype
 /// tensor counts.
 pub fn convert(dir: &Path, out: &Path, opts: &ConvertOptions) -> Result<Vec<(String, usize)>> {
-    let (assets, tensors) = read_assets_and_tensors(dir)?;
+    if opts.no_cloning && opts.only_cloning {
+        bail!("--no-cloning and --only-cloning exclude each other");
+    }
+    let (assets, tensors) = read_assets_and_tensors(dir, !opts.no_voices && !opts.only_cloning)?;
     let mut names: Vec<&String> = tensors
         .keys()
         .filter(|n| !(opts.no_cloning && is_cloning(n)))
+        .filter(|n| !opts.only_cloning || is_cloning(n) || *n == "mel_stats")
         .collect();
     names.sort();
 
@@ -250,18 +296,18 @@ pub fn convert(dir: &Path, out: &Path, opts: &ConvertOptions) -> Result<Vec<(Str
         qtensors.push((name.clone(), QTensor::quantize(t, dt)?));
     }
 
-    let metadata = [
-        (
-            "general.architecture",
-            gguf_file::Value::String(ARCH.into()),
-        ),
-        ("xtts.config", gguf_file::Value::String(assets.config)),
-        ("xtts.tokenizer", gguf_file::Value::String(assets.tokenizer)),
-        (
+    let mut metadata = vec![(
+        "general.architecture",
+        gguf_file::Value::String(ARCH.into()),
+    )];
+    if !opts.only_cloning {
+        metadata.push(("xtts.config", gguf_file::Value::String(assets.config)));
+        metadata.push(("xtts.tokenizer", gguf_file::Value::String(assets.tokenizer)));
+        metadata.push((
             "xtts.voices",
             gguf_file::Value::String(serde_json::to_string(&assets.voices)?),
-        ),
-    ];
+        ));
+    }
     let metadata: Vec<(&str, &gguf_file::Value)> = metadata.iter().map(|(k, v)| (*k, v)).collect();
     let refs: Vec<(&str, &QTensor)> = qtensors.iter().map(|(n, t)| (n.as_str(), t)).collect();
     let mut file = std::io::BufWriter::new(std::fs::File::create(out)?);
@@ -275,7 +321,7 @@ pub fn convert(dir: &Path, out: &Path, opts: &ConvertOptions) -> Result<Vec<(Str
 /// Loads a GGUF file or a Coqui checkpoint directory (F32).
 pub fn load(path: &Path, device: &Device) -> Result<(Weights, Assets)> {
     if path.is_dir() {
-        let (assets, tensors) = read_assets_and_tensors(path)?;
+        let (assets, tensors) = read_assets_and_tensors(path, true)?;
         let mut map = HashMap::new();
         for (name, t) in tensors {
             map.insert(name, Arc::new(QTensor::quantize(&t, GgmlDType::F32)?));
@@ -316,4 +362,39 @@ pub fn load(path: &Path, device: &Device) -> Result<(Weights, Assets)> {
         map.insert(name, Arc::new(t));
     }
     Ok((Weights::new(map, device.clone()), assets))
+}
+
+/// Only what voice cloning needs, from a GGUF (full or `--only-cloning`) or a
+/// Coqui checkpoint directory.
+pub fn load_cloning(path: &Path, device: &Device) -> Result<Weights> {
+    let mut map = HashMap::new();
+    if path.is_dir() {
+        for (name, t) in read_checkpoint(&path.join("model.pth"))? {
+            if is_cloning(&name) || name == "mel_stats" {
+                map.insert(name, Arc::new(QTensor::quantize(&t, GgmlDType::F32)?));
+            }
+        }
+        return Ok(Weights::new(map, device.clone()));
+    }
+    let mut file = std::fs::File::open(path).with_context(|| format!("opening {path:?}"))?;
+    let content =
+        gguf_file::Content::read(&mut file).with_context(|| format!("reading {path:?}"))?;
+    match content.metadata.get("general.architecture") {
+        Some(gguf_file::Value::String(s)) if s == ARCH => {}
+        _ => bail!("{path:?} is not an {ARCH} GGUF"),
+    }
+    let names: Vec<String> = content.tensor_infos.keys().cloned().collect();
+    for name in names {
+        if !(is_cloning(&name) || name == "mel_stats") {
+            continue;
+        }
+        let quantized = !matches!(
+            content.tensor_infos[&name].ggml_dtype,
+            GgmlDType::F32 | GgmlDType::F16 | GgmlDType::BF16
+        );
+        let dev = if quantized { device } else { &Device::Cpu };
+        let t = content.tensor(&mut file, &name, dev)?;
+        map.insert(name, Arc::new(t));
+    }
+    Ok(Weights::new(map, device.clone()))
 }

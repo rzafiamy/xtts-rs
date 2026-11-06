@@ -6,9 +6,11 @@ use crate::gpt::Gpt;
 use crate::hifigan::{HifiGan, StreamDecoder};
 use crate::sampling::{Sampler, SamplingOptions};
 use crate::text::{self, TextTokenizer};
+use crate::voicefile::{self, VoiceDir};
 use anyhow::{Context, Result, bail};
 use candle_core::{DType, Device, Tensor};
 use std::path::Path;
+use std::sync::Arc;
 
 /// Conditioning of one voice: GPT latents `[1, 32, 1024]` and the
 /// HiFi-GAN speaker embedding `[512]`.
@@ -66,6 +68,7 @@ pub struct Xtts {
     voice_names: Vec<String>,
     voice_cond: Option<Tensor>,
     voice_spk: Option<Tensor>,
+    voice_dir: Option<Arc<VoiceDir>>,
     pub device: Device,
 }
 
@@ -107,6 +110,7 @@ impl Xtts {
             voice_names: assets.voices,
             voice_cond,
             voice_spk,
+            voice_dir: None,
             device: device.clone(),
         })
     }
@@ -115,15 +119,36 @@ impl Xtts {
         self.config.model_args.output_sample_rate as u32
     }
 
-    /// Built-in voice names (Coqui's 58 studio speakers).
-    pub fn voices(&self) -> &[String] {
+    /// Built-in voice names (Coqui's 58 studio speakers), then those of the
+    /// voices folder that do not repeat one.
+    pub fn voices(&self) -> Vec<String> {
+        all_voice_names(&self.voice_names, self.voice_dir.as_deref())
+    }
+
+    /// Built-in voice names only.
+    pub fn builtin_voices(&self) -> &[String] {
         &self.voice_names
     }
 
-    /// A built-in voice, by name (case-insensitive; `_` or `-` may stand
-    /// for spaces).
+    /// Also serve the `.voice` files of a folder; on a repeated name the
+    /// file wins over the built-in voice.
+    pub fn attach_voice_dir(&mut self, dir: Arc<VoiceDir>) {
+        self.voice_dir = Some(dir);
+    }
+
+    pub fn voice_dir(&self) -> Option<Arc<VoiceDir>> {
+        self.voice_dir.clone()
+    }
+
+    /// A voice, by name (case-insensitive; `_` or `-` may stand for spaces):
+    /// from the voices folder, otherwise built in.
     pub fn voice(&self, name: &str) -> Result<Voice> {
-        let norm = |s: &str| s.to_lowercase().replace(['_', '-'], " ");
+        if let Some(dir) = &self.voice_dir
+            && let Some(path) = dir.path_of(name)
+        {
+            return Ok(voicefile::read_voice(&path, &self.device)?.1);
+        }
+        let norm = voicefile::normalize_name;
         let want = norm(name);
         let i = self
             .voice_names
@@ -341,6 +366,23 @@ impl Xtts {
         }
         Ok(())
     }
+}
+
+/// Built-in names, then the folder's that do not repeat one.
+pub fn all_voice_names(builtin: &[String], dir: Option<&VoiceDir>) -> Vec<String> {
+    let mut names = builtin.to_vec();
+    if let Some(d) = dir {
+        let seen: std::collections::HashSet<String> = builtin
+            .iter()
+            .map(|n| voicefile::normalize_name(n))
+            .collect();
+        names.extend(
+            d.names()
+                .into_iter()
+                .filter(|n| !seen.contains(&voicefile::normalize_name(n))),
+        );
+    }
+    names
 }
 
 /// When streamed audio is decoded, in codes (~46 ms of audio each).

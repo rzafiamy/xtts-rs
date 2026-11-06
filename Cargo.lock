@@ -2643,6 +2643,7 @@ dependencies = [
  "cudarc 0.19.10",
  "hound",
  "rand",
+ "rayon",
  "regex",
  "serde",
  "serde_json",

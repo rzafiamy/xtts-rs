@@ -9,6 +9,14 @@ spoken (`--no-warmup` skips it), so `GET /health` answering means ready. One
 synthesis runs at a time; cached CUDA memory is returned to the driver after
 each request.
 
+`--voices-dir <folder>` adds the `.voice` files found there, subfolders too:
+only their headers are read at startup, the voice itself when a request uses
+it. A file wins over a built-in voice of the same name. Unknown names and
+`GET /v1/voices` rescan the folder (at most every 2 s), so voices cloned while
+the server runs appear by themselves. With a folder, a missing `--voice` falls
+back to the first voice found; with an empty folder the server starts without
+a warmup and answers `400` until a voice appears.
+
 ## `POST /v1/audio/speech`
 
 OpenAI's shape plus `language`:
